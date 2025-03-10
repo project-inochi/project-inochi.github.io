@@ -1,0 +1,255 @@
+---
+title: "Linux Kernel Development/Maintenance Quick Table"
+date: 2025-03-10T19:13:20+08:00
+author: Inochi Amaoto
+tags: ['Linux']
+weight: 2
+---
+
+== Patch Development
+
+=== Testing
+
+[source,bash]
+----
+# env
+export ARCH=riscv
+export CROSS_COMPILE=riscv64-linux-gnu-
+export BUILD_KDIR=<path>
+
+# Device bindings check
+make O=${BUILD_KDIR} DT_CHECKER_FLAGS=-m dt_binding_check -j<N>
+
+# DTB check
+make O=${BUILD_KDIR} DT_CHECKER_FLAGS=-m W=1 dtbs_check
+
+# Package
+make O=${BUILD_KDIR} pacman-pkg -j<N>
+----
+
+=== Format patch
+
+[source,bash]
+----
+# group
+git format-patch --patience -s --notes --cover-letter --subject-prefix="PATCH" -1
+
+# separate
+git format-patch -N --no-thread --patience -s --subject-prefix="PATCH" --notes -1
+----
+
+=== Get maintainer
+
+[source,bash]
+----
+# base function
+function _kernel_mail ()
+{
+    while read -r mail; do
+        if echo ${mail} | grep --color=auto -Pq '^.*<.*@.*>'; then
+            echo "To:" ${mail};
+        else
+            echo "Cc:" ${mail};
+        fi;
+    done
+}
+export -f _kernel_mail
+
+# group add
+./scripts/get_maintainer.pl *.patch --norolestats | _kernel_mail | tac | parallel sed -i "'3 i {=2 uq =}'" {1} ::: *.patch :::: -
+
+# separate add
+parallel ./scripts/get_maintainer.pl {} --norolestats '|' _kernel_mail '|' sed -i "'3r /dev/stdin'" {} ::: *.patch
+----
+
+== Maintenance
+
+=== b4
+
+Auto fetch and apply the patch from lore.
+
+[source,bash]
+----
+function _kernel_apply ()
+{
+	declare -a -r TRAILLERS=();
+    if [[ -z "$TMP" ]]; then
+        TMP=$(mktemp -d);
+    fi;
+    b4 am --no-cover -c -sl -M -n patch -o $TMP "$@";
+    for file in $(find $TMP/patch.maildir -type f);
+    do
+        for trailler in "${TRAILLERS[@]}";
+        do
+            git interpret-trailers --in-place --trim-empty --if-exists=addIfDifferent --trailer="${trailler}" $file;
+        done;
+    done
+}
+----
+
+=== lei
+
+[source,bash]
+----
+lei up <path>
+----
+
+== mail (neomutt)
+
+=== neomuttrc
+
+[source,bash]
+----
+# ~/.config/neomutt/neomuttrc
+# ================  IMAP ====================
+#set imap_user='xxx@xxx'
+#set imap_pass='xxxx'
+
+# ================  SMTP  ====================
+#set smtp_url="smtp://$imap_user@smtp.gmail.com:587/"
+#set smtp_pass=$imap_pass
+#set ssl_force_tls=yes # Require encrypted connection
+
+set realname="xxxx"
+set from="xxxx"
+set use_from=yes
+set metoo=yes
+
+set sendmail="/usr/bin/msmtp"
+
+set mbox_type=Maildir
+set record="+.sent"
+set postponed="+.drafts"
+
+# Cc/To itself
+send-hook ~A "my_hdr Cc: xxxx <xxxx>"
+reply-hook ~A "my_hdr Cc: xxxx <xxxx>"
+
+named-mailboxes linux-kvm /mainline/mail/kvm/
+set folder="/mainline/mail/kvm/"
+set mbox="/mainline/mail/kvm/"
+set spoolfile="/mail/kvm/"
+
+source ~/.config/neomutt/settings
+source ~/.config/neomutt/colors
+source ~/.config/neomutt/mappings
+----
+
+=== settings
+
+[source,bash]
+----
+# ~/.config/neomutt/settings
+# vim: filetype=muttrc
+
+# ================  Composition  ====================
+set editor=`echo \$EDITOR`
+set edit_headers=yes  # See the headers when editing
+set charset=UTF-8     # value of $LANG; also fallback for send_charset
+# Sender, email address, and sign-off line must match
+unset use_domain        # because localhost is just embarrassing
+
+# Sort by threads so I can see wtf is going on
+set sort="threads"
+set strict_threads="yes"
+set sort_browser=reverse-date
+set sort_aux=reverse-last-date-received
+set collapse_unread="yes"
+
+# ignore duplicate thread
+set duplicate_threads=false
+
+# Show Message-Id in the window
+unignore Message-Id:
+----
+
+=== mappings
+
+[source,bash]
+----
+# ~/.config/neomutt/mappings
+# vim: filetype=muttrc
+
+# Lets me collapse fucking everything
+bind index = collapse-all
+bind index - collapse-thread
+
+bind pager g noop
+bind pager g group-chat-reply
+----
+
+=== color
+
+[source,bash]
+----
+# ~/.config/neomutt/color
+# vim: filetype=muttrc
+
+# Header colors:
+color header blue default ".*"
+color header brightmagenta default "^(From)"
+color header brightcyan default "^(Subject)"
+color header brightwhite default "^(CC|BCC)"
+
+mono bold bold
+mono underline underline
+mono indicator reverse
+mono error bold
+color normal default default
+color indicator brightcyan default # currently selected message. default makes bar clear, disabled arrow to save space.
+color sidebar_highlight red default
+color sidebar_divider brightblack black
+color sidebar_flagged red black
+color sidebar_new green black
+color normal brightyellow default
+color error red default
+color tilde black default
+color message cyan default
+color markers red white
+color attachment white default
+color search brightmagenta default
+color status brightyellow black
+color hdrdefault brightgreen default
+color quoted green default
+color quoted1 blue default
+color quoted2 cyan default
+color quoted3 yellow default
+color quoted4 red default
+color quoted5 brightred default
+color signature brightgreen default
+color bold black default
+color underline black default
+color normal default default
+
+color body brightred default "[\-\.+_a-zA-Z0-9]+@[\-\.a-zA-Z0-9]+" # Email addresses
+color body brightblue default "(https?|ftp)://[\-\.,/%~_:?&=\#a-zA-Z0-9]+" # URL
+color body green default "\`[^\`]*\`" # Green text between ` and `
+color body brightblue default "^# \.*" # Headings as bold blue
+color body brightcyan default "^## \.*" # Subheadings as bold cyan
+color body brightgreen default "^### \.*" # Subsubheadings as bold green
+color body yellow default "^(\t| )*(-|\\*) \.*" # List items as yellow
+color body brightcyan default "[;:][-o][)/(|]" # emoticons
+color body brightcyan default "[;:][)(|]" # emoticons
+color body brightcyan default "[ ][*][^*]*[*][ ]?" # more emoticon?
+color body brightcyan default "[ ]?[*][^*]*[*][ ]" # more emoticon?
+color body red default "(BAD signature)"
+color body cyan default "(Good signature)"
+color body brightblack default "^gpg: Good signature .*"
+color body brightyellow default "^gpg: "
+color body brightyellow red "^gpg: BAD signature from.*"
+mono body bold "^gpg: Good signature"
+color body red default "([a-z][a-z0-9+-]*://(((([a-z0-9_.!~*'();:&=+$,-]|%[0-9a-f][0-9a-f])*@)?((([a-z0-9]([a-z0-9-]*[a-z0-9])?)\\.)*([a-z]([a-z0-9-]*[a-z0-9])?)\\.?|[0-9]+\\.[0-9]+\\.[0-9]+\\.[0-9]+)(:[0-9]+)?)|([a-z0-9_.!~*'()$,;:@&=+-]|%[0-9a-f][0-9a-f])+)(/([a-z0-9_.!~*'():@&=+$,-]|%[0-9a-f][0-9a-f])*(;([a-z0-9_.!~*'():@&=+$,-]|%[0-9a-f][0-9a-f])*)*(/([a-z0-9_.!~*'():@&=+$,-]|%[0-9a-f][0-9a-f])*(;([a-z0-9_.!~*'():@&=+$,-]|%[0-9a-f][0-9a-f])*)*)*)?(\\?([a-z0-9_.!~*'();/?:@&=+$,-]|%[0-9a-f][0-9a-f])*)?(#([a-z0-9_.!~*'();/?:@&=+$,-]|%[0-9a-f][0-9a-f])*)?|(www|ftp)\\.(([a-z0-9]([a-z0-9-]*[a-z0-9])?)\\.)*([a-z]([a-z0-9-]*[a-z0-9])?)\\.?(:[0-9]+)?(/([-a-z0-9_.!~*'():@&=+$,]|%[0-9a-f][0-9a-f])*(;([-a-z0-9_.!~*'():@&=+$,]|%[0-9a-f][0-9a-f])*)*(/([-a-z0-9_.!~*'():@&=+$,]|%[0-9a-f][0-9a-f])*(;([-a-z0-9_.!~*'():@&=+$,]|%[0-9a-f][0-9a-f])*)*)*)?(\\?([-a-z0-9_.!~*'();/?:@&=+$,]|%[0-9a-f][0-9a-f])*)?(#([-a-z0-9_.!~*'();/?:@&=+$,]|%[0-9a-f][0-9a-f])*)?)[^].,:;!)? \t\r\n<>\"]"
+
+# Default index colors:
+color index yellow default '.*'
+color index_author red default '.*'
+color index_number blue default
+color index_subject cyan default '.*'
+
+# For new mail:
+color index brightyellow black "~N"
+color index_author brightred black "~N"
+color index_subject brightcyan black "~N"
+
+color progress black brightcyan
+----
