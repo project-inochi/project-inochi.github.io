@@ -40,7 +40,7 @@ jobs:
           bundler-cache: true
 
       - name: Setup asciidcotor
-        run: echo 'bundle exec asciidoctor "$@"' > /usr/local/bin/asciidoctor && sudo chmod +x /usr/local/bin/asciidoctor
+        run: echo '#!/bin/bash\nbundle exec asciidoctor --trace -v "$@"' > /usr/local/bin/asciidoctor && sudo chmod +x /usr/local/bin/asciidoctor
       - name: Verify asciidoctor
         run: asciidoctor -V
 
