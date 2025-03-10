@@ -1,0 +1,28 @@
+baseURL: https://project-inochi.github.io
+languageCode: en-us
+title: Project Inochi
+description:
+theme: loveit
+
+params:
+  header:
+    title:
+      name: Project Inochi
+  footer:
+    enable: false
+  home:
+    profile:
+      title:
+      subtitle:
+      typeit: false
+  goToTop: true
+  math: true
+
+markup:
+  asciidocExt:
+    extensions: []
+    workingFolderCurrent: true
+
+security:
+  exec:
+    allow: ['^(dart-)?sass(-embedded)?$', '^go$', '^git$', '^npx$', '^postcss$', '^tailwindcss$', '^asciidoctor$']
