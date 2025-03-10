@@ -38,8 +38,11 @@ jobs:
         with:
           ruby-version: '3.3'
           bundler-cache: true
+
+      - name: Setup asciidcotor
+        run: echo 'bundle exec asciidoctor "$@"' > /usr/local/bin/asciidoctor && sudo chmod +x /usr/local/bin/asciidoctor
       - name: Verify asciidoctor
-        run: bundle exec asciidoctor -V
+        run: asciidoctor -V
 
       - name: Setup Pages
         id: pages
