@@ -1,6 +1,7 @@
 # exclude all dot file by default
 .*
 !.gitignore
+!.github
 
 # Hugo
 /public/
