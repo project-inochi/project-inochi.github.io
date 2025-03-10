@@ -27,6 +27,7 @@ markup:
     attributes:
       source-highlighter: rouge
       rouge-linenums-mode: table
+      source-linenums-option:
 
 security:
   exec:
