@@ -17,8 +17,8 @@ params:
       typeit: false
   goToTop: true
   math: true
-  description: ""
-  author: ""
+  description: "Project Inochi Records"
+  author: Inochi Amaoto
 
 markup:
   asciidocExt:
