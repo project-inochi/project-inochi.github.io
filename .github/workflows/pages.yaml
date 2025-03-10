@@ -38,6 +38,8 @@ jobs:
         with:
           ruby-version: '3.3'
           bundler-cache: true
+      - name: Verify asciidoctor
+        run: bundle exec asciidoctor -V
 
       - name: Setup Pages
         id: pages
