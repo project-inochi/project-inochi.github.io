@@ -1,0 +1,104 @@
+---
+title: "spinalHDL learning (1): UART+PWM"
+date: 2025-03-10T16:15:00+08:00
+author: Ghost
+---
+
+:stem: latexmath
+
+== uart实现
+
+=== uart初始化
+
+[source,scala]
+----
+val uartCtrl = new UartCtrl()
+// set config manually to show that this is still OK
+uartCtrl.io.config.setClockDivider(baudrate = 115200 Hz, clkFrequency = 50 MHz)
+uartCtrl.io.config.frame.dataLength := 7  // 8 bits
+uartCtrl.io.config.frame.parity := UartParityType.NONE
+uartCtrl.io.config.frame.stop := UartStopType.ONE
+uartCtrl.io.uart <> io.uart
+uartCtrl.io.writeBreak := False
+----
+
+自动布线时writeBreak引脚没有值会导致报错，需要手动赋值。
+
+=== 发送数据
+
+[source,scala]
+----
+val write = Stream(Bits(8 bits))
+write.valid := False
+write.payload := 0x11
+
+when(uartCtrl.io.read.valid){
+	write.valid := True
+	write.payload := uartCtrl.io.read.payload
+}
+----
+
+== pwm实现
+
+Counter可以根据clk自增。在Counter.value大于pointer与小于pointer时为引脚赋不同的电平即可实现方波。
+
+调节pointer的值可以实现不同的占空比。
+
+[source,scala]
+----
+// 注意只有inc为True时counter才会递增，否则调用counter.increment()递增。
+val counter = Counter(1, 2000, inc = True)
+val pointer = RegInit(U(0, 16 bits))
+
+io.pwm_fans := counter.value < pointer
+----
+
+=== 完整代码
+
+[source,scala]
+----
+case class pwm_fan() extends Component {
+  val io = new Bundle {
+    val uart = master(Uart())
+    val leds = out Bits(8 bits)
+    val pwm_fans = out Bool()
+  }
+  val counter = Counter(1, 2000, inc = True)
+  val pointer = RegInit(U(0, 16 bits))
+
+  val uartCtrl = new UartCtrl()
+  // set config manually to show that this is still OK
+  uartCtrl.io.config.setClockDivider(baudrate = 115200 Hz, clkFrequency = 50 MHz)
+  uartCtrl.io.config.frame.dataLength := 7  // 8 bits
+  uartCtrl.io.config.frame.parity := UartParityType.NONE
+  uartCtrl.io.config.frame.stop := UartStopType.ONE
+  uartCtrl.io.uart <> io.uart
+  uartCtrl.io.writeBreak := False
+
+  // Assign io.led with a register loaded each time a byte is received
+  io.leds := ~uartCtrl.io.read.toReg()
+
+  // Write the value of switch on the uart each 2000 cycles
+  val write = Stream(Bits(8 bits))
+  write.valid := False
+  write.payload := 0x11
+
+  when(uartCtrl.io.read.valid){
+    write.valid := True
+    write.payload := uartCtrl.io.read.payload
+
+    switch(uartCtrl.io.read.payload){
+      for (i <- 48 to 57) {
+        is(i) {
+          pointer := U((i - 48) * 200, 16 bits)
+        }
+      }
+    }
+  }
+
+  write >-> uartCtrl.io.write
+
+  io.pwm_fans := counter.value < pointer
+
+}
+----

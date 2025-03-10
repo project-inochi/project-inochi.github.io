@@ -2,7 +2,7 @@ baseURL: https://project-inochi.github.io
 languageCode: en-us
 title: Project Inochi
 description:
-theme: loveit
+theme: m10c
 
 params:
   header:
@@ -17,6 +17,8 @@ params:
       typeit: false
   goToTop: true
   math: true
+  description: ""
+  author: ""
 
 markup:
   asciidocExt:
