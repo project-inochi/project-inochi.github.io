@@ -5,12 +5,12 @@
       {{- if ne .Type "page" }}
       <div class="post-meta">
         <div>
-          {{ partial "icon.html" (dict "ctx" $ "name" "calendar") }}
-          {{ .PublishDate.Format "Jan 2, 2006" }}
-        </div>
-        <div>
           {{ partial "icon.html" (dict "ctx" $ "name" "user") }}
           {{ .Params.Author }}
+        </div>
+        <div>
+          {{ partial "icon.html" (dict "ctx" $ "name" "calendar") }}
+          {{ .PublishDate.Format "Jan 2, 2006" }}
         </div>
         <div>
           {{ partial "icon.html" (dict "ctx" $ "name" "clock") }}
