@@ -24,7 +24,14 @@ markup:
   asciidocExt:
     extensions: []
     workingFolderCurrent: true
+    attributes:
+      source-highlighter: rouge
+      rouge-linenums-mode: table
 
 security:
   exec:
     allow: ['^(dart-)?sass(-embedded)?$', '^go$', '^git$', '^npx$', '^postcss$', '^tailwindcss$', '^asciidoctor$']
+
+taxonomies:
+  tag: "tags"
+  category: "categories"

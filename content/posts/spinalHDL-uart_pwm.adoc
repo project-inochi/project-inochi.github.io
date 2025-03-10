@@ -2,6 +2,7 @@
 title: "spinalHDL learning (1): UART+PWM"
 date: 2025-03-10T16:15:00+08:00
 author: Ghost
+tags: ['spinalHDL']
 ---
 
 :stem: latexmath

@@ -17,7 +17,9 @@
     {{ template "_internal/google_analytics.html" . }}
     {{ template "_internal/twitter_cards.html" . }}
     {{ template "_internal/opengraph.html" . }}
-
+    {{ with resources.Get "css/syntax.css" }}
+        <link rel="stylesheet" href="{{ .RelPermalink }}" integrity="{{ .Data.Integrity }}" crossorigin="anonymous">
+    {{ end }}
   </head>
   <body>
     <header class="app-header">
@@ -50,7 +52,7 @@
       {{ end }}
     </main>
     {{ if .Param "math" }}
-    {{ partialCached "math.html" . }}
-{{ end }}
+        {{ partialCached "math.html" . }}
+    {{ end }}
 </body>
 </html>
