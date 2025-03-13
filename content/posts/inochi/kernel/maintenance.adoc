@@ -72,7 +72,7 @@ Auto fetch and apply the patch from lore.
 ----
 function _kernel_apply ()
 {
-	declare -a -r TRAILLERS=();
+    declare -a -r TRAILLERS=();
     if [[ -z "$TMP" ]]; then
         TMP=$(mktemp -d);
     fi;
