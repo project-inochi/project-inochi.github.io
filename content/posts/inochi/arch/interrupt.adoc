@@ -1,0 +1,78 @@
+---
+title: "Interrupt Operations"
+author: Inochi Amaoto
+date: 2025-03-13T13:15:15+08:00
+tags: ['architecture']
+---
+
+== Introduction
+
+There are three operations related to one interrupte: trigger, clear and access. In most case, the interrupt can be cleared as the way for accessing it. So we only talk about trigger and access.
+
+== Interrupt trigger
+
+There are two common way to trigger an interrupt: Pull-up the interrupt line or send a message to a MMIO address. The first is known as wire interrupt, and the last is known as MSI (Message Signaled Interrupt).
+
+[source,c]
+----
+// trigger wire interrupt
+unsigned long regval = read(regaddr);
+regval |= BIT(INTERRUPT_NUMBER);
+write(regval, regaddr);
+
+// trigger MSI interrupt
+write(INTERRUPT_NUMBER, DEVICE_ADDR);
+----
+
+== Interrupt access/clear
+
+For getting interrupt number, the most simple and common way is access a register and find the related bit, it can be summary like this:
+
+[source,c]
+----
+unsigned long regval = read(regaddr);
+if (regval & BIT(INTERRUPT_NUMBER)) {
+	// do something to handle the interrupt
+}
+----
+
+For clearing the interrupt, just clear the bit, like this:
+
+[source,c]
+----
+unsigned long regval = read(regaddr);
+regval &= ~BIT(INTERRUPT_NUMBER);
+write(regval, regaddr);
+----
+
+By combining them, we got the whole process to handle an interrupt:
+
+[source,c]
+----
+unsigned long regval = read(regaddr);
+
+if (regval & BIT(INTERRUPT_NUMBER)) {
+	// do something to handle the interrupt
+
+	regval &= ~INTERRUPT_BIT;
+}
+
+write(regval, regaddr);
+----
+
+The above thing can cover the logic to handle almost all interrupt. However, sometimes it is hard to access MSI interrupt in this way, so we need to find another way to provide interrupt number. As it is clear that the MSI come from bus write operation, it is easy to consider using FIFO (Queue, or something similar) to hold the interrupt number. So we got a interesting way to access the interrupt number.
+
+[source,c]
+----
+unsigned long regval = read(DEVICE_ADDR);
+
+if (regval == INTERRUPT_NUMBER) {
+	// do something to handle the interrupt
+}
+----
+
+It is obvious that we can only got one interrupt number to process each time, so a loop is needed to processing all the interrupt.
+
+For clearing this fifo, in most case the read operation imply clear the first one. If not, it may provide a interface to trigger clear. The clear way depends on specific hardware so it is better to refer to its document.
+
+In fact, using FIFO does have limitation: limit capacity, if the FIFO is full, the incoming interrupt will be lost. It can be easily resolved by increasing the capacity to hold all the interrupt number. For example, the FIFO can be achieved via a bit vector to provide priority controll and deduplication.
