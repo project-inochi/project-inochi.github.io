@@ -1,0 +1,77 @@
+---
+title: "spinalHDL learning (2): I2C"
+date: 2025-03-19T09:59:05+08:00
+author: Ghost
+tags: ['spinalHDL']
+---
+
+== 介绍
+
+使用状态机模拟i2c协议。使用I2cSlave提供的状态判断驱动状态机运行。
+
+== TODO
+
+* [ ] 复位后状态机没有进入开始状态
+* [ ] 添加reg与data对应，保存收到的数据
+
+== spinalHDL
+
+=== 状态机onExit与onEntry
+
+https://spinalhdl.github.io/SpinalDoc-RTD/zh_CN/master/SpinalHDL/Libraries/fsm.html
+
+[source,scala]
+----
+A.onExit {
+	data := 0x1
+}
+
+B.onEntry{
+	data := 0x2
+}
+----
+
+状态A->状态B，A的onExit部分与B的onEntry部分执行时机相同，但仍然区分先后。即上述代码不会产生重复赋值的错误，
+data的值最终为0x2,0x1不会出现在波形中。
+
+=== inout
+
+使用可读开漏IO实现inout引脚，使用read信号读取外部值，使用write输出值（给write赋值后无需进行释放操作）。
+
+[source,scala]
+----
+// 启用双向端口，否则verilog会生成四条线
+InOutWrapper(new i2c())
+----
+
+== i2c
+
+CH34x驱动: https://github.com/WCHSoftGroup/ch34x_mphsi_master_linux
+
+SMBUS: https://www.smbus.org/specs/
+
+I2C-Tools: https://linuxdevicedriversdoc.readthedocs.io/en/latest/Doc/05.I2C子系统/03.I2C-Tools.html
+
+
+=== 读写时序
+
+写时序
+[source]
+----
+master    : S  ADDR+W|   |reg|   |data|   |....|data|   |stop
+slave     :          |ACK|   |ACK|    |ACK|....|    |ACK|
+----
+
+读时序
+[source]
+----
+master    : S  ADDR+W|   |reg|    |   Sr  ADDR+R|   |    |ACK|....|    |NACK|stop
+slave     :          |ACK|    |ACK|             |ACK|data|   |....|data|
+----
+
+对于i2cdetect, 应该使用写数据来检测设备。如果使用地址|R，则此时总线的控制权已经给从机了，
+正常来说探测应该发完地址就发送Stop来结束的，但是由于控制权在从机那边，主机无法停止，会导致总线卡死。
+
+=== 电平变换时机
+
+从机在回应ACK以及向主机发送数据时，应在SCL为低时变换电平,否则会产生错误的START与STOP信号。
