@@ -1,0 +1,26 @@
+---
+title: "FPGA调试 (1): ILA的使用"
+date: 2025-09-010T16:14:05+08:00
+author: Ghost
+tags: ['Vivado']
+---
+
+== ILA (Integrated Logic Analyzer)
+
+=== IP配置
+
+* NUmber of Probes: 需要采集的信号 + 1 (ILA工作需要一个trigger信号).
+
+* 采集数据深度: 每次trigger触发时保存的波形长度, 推荐16384, 太小了采集数据太少.
+
+* Number of Comparators: 2
+
+=== IP使用
+
+* 在"Trigger Setup"标签页添加触发信号才能正常使用.
+
+* 在litex中, 晶振输出的差分时钟(clk_n, clk_p)ip无法直接使用, 应使用时钟缓冲器输出的系统时钟.
+
+=== 参考
+
+https://blog.csdn.net/unique_ZRF/article/details/127715565
