@@ -1,0 +1,98 @@
+---
+title: "spinalHDL learning (3): LiteX&Vexiiriscv"
+date: 2025-09-010T09:14:05+08:00
+author: Ghost
+tags: ['spinalHDL', 'Vexiiriscv', 'LiteX']
+---
+
+== 编译基本流程
+
+=== 编写板级描述文件
+
+platform文件用于描述板卡资源，定义引脚属性等。
+
+[TIP]
+====
+在编译时如果需要使用向xdc文件添加指令来进行额外约束操作(IO约束、时钟约束等),
+可以在"do_finalize"中使用“self.add_platform_command("")”来添加.
+====
+
+target文件用于定义具体soc设计，实例化相关phy等。
+
+=== 仿真
+[source,bash]
+----
+litex_sim --threads 8 --opt-level Ofast \
+  --update-repo=no \
+  --cpu-type vexiiriscv --cpu-variant debian \
+  --bios-lto   --sim-debug   --bus-standard=axi --with-sdram --sdram-module K4B1G0446F --sdram-data-width=64 --soc-json soc.json   --sdram-init boot.json
+----
+
+=== 编译
+[source,bash]
+----
+targets/*.py --build --update-repo=no --cpu-type vexiiriscv --cpu-variant debian --with-coherent-dma --no-netlist-cache --cpu-count 4
+----
+
+* --update-repo=no: 每次编译前都会自动拉取修改, 添加此选项防止覆盖本地修改.
+
+* --cpu-variant debian: "debian"将编译64位的cpu, 不写或使用"linux"则编译32位cpu.
+
+* --with-coherent-dma: 如果使用sd卡, 必须打开此选项来启用DMA, 否则sd卡的SD-Mode无法使用(spi-Mode可以使用).
+
+* --no-netlist-cache: 如果Vexiiriscv没有新的提交, 编译器不会重复编译Vexiiriscv的Verilog代码,
+启用此选项使每一次编译都强制重新生成Verilog代码.
+
+=== 修改initram文件
+
+"/etc/inittab"中更改串口配置为:
+
+[source]
+----
+::respawn:-/sbin/getty -L 0 ttyLXU0 vt220
+----
+
+=== 生成dts/dtb
+
+[source,bash]
+----
+litex_json2dts_linux csr.json > soc.dts --initrd-start 50331648 --initrd initramfs.cpio
+
+# 生成的dts中, 需要修改启动选项
+chosen {
+    bootargs = "console=ttyLXU0,115200n8 earlycon ignore_loglevel";
+    stdout-path = "serial0:115200n8";
+};
+
+dtc -I dts -O dtb -o soc.dtb soc.dts
+----
+
+=== 编译opensbi
+
+=== 编译内核文件
+
+基于defconfig, 搜索"litex, liteuart".
+
+=== boot.json
+
+[source,json]
+----
+{
+	"Image_clk":  	   "0x40200000",
+	"soc.dtb":		     "0x44200000",
+	"initramfs.cpio":  "0x43000000",
+	"fw_jump.bin":     "0x40000000",
+	"addr":            "0x40000000",
+	"r2":              "0x44200000"
+}
+
+// 也可以通过在编译opensbi时添加参数来不使用"r2"参数
+"FW_FDT_PATH=/home/ghost/Projects/fpga/litex/image/sd/soc.dtb FW_JUMP_FDT_ADDR=0x44200000"
+来将dtb编译到opensbi中
+----
+
+* "addr": 启动地址, 如果不指定则默认使用json文件的最后一个地址.
+
+* "r2": 将此地址存入a2寄存器供opensbi读取dtb.
+
+=== vivado下载二进制文件
