@@ -1,0 +1,61 @@
+---
+title: "spinalHDL learning (4): AIA"
+date: 2025-09-010T16:45:05+08:00
+author: Ghost
+tags: ['spinalHDL', 'aia']
+---
+
+== aia介绍
+
+== 线中断, msi
+
+== plic/aplic/imsic概述
+
+外部中断控制器用于接收外部中断线的信号, 将对应中断源的pending信号记录下来,
+并向符合条件的最高优先级pending对应的target发送信号通知有中断到来.
+
+=== plic
+
+plic最多支持1023个source与15872个target, 支持使用优先级与阈值来控制是否将接收到的中断信号发送到对应的hart.
+
+plic采用电平触发模式, 当source线被拉高时, 对应的IP位会被置1, 标识该中断线有中断到来等待被处理.
+plic会将符合条件(阈值)的source对应的target线拉高来告知hart有新的中断需要处理.
+
+== aplic实现
+
+相对于plic, aplic支持更多种触发方式与msi模式, 并且可以多个aplic级联来分别对应不同的模式.
+
+* "class TilelinkAPlicFiber"可以实例化一个总线节点, 通过内部的creat函数来添加相应的输入输出口(sources, targets, delegation).
+该类会在所有的creat函数都调用完成后才会完成构建, 将sources, targets, childSources以及模式信息传送给APlic来构建APlic期间.
+
+* "class APlic": 根据sourceIds, hartIds, childInfos信息来生成对应的寄存器以及线束, 同时将参数传送给"class APlicDirectGateway"来进行优先级与阈值的判断.
+对于msi模式相关寄存器, 当当前器件是M模式的root节点时, 需要实例化相关的寄存器来指向IMSIC, 否则需要实例化线束从上级得到该数据.
+
+* "class APlicDirectGateway": 在寻找符合阈值的最高优先级的有效id时, 使用了reduceBalancedTree来查找. 它可以将所有信号均匀的分布到整个树中从而防止某些信号的传播路径太长影响时序.
+
+* "class APlicMapper": 将"class APlic"中实例化的寄存器分配到内存地址中, 同时处理总线读claim寄存器时的清除ip位的操作.
+
+=== imsic实现
+
+[TODO]
+====
+参数的计算方式
+内存分配方式
+====
+
+imsic主要实例化seteipnum寄存器来接收msi信息, 并将对应的eip位置1.
+
+=== AIACsr
+
+* xiselect, xireg: 向select寄存器中写入不同的值, 读取reg寄存器可以读取到目标寄存器的值, 同时对reg寄存器进行写入操作也可以将内容写入到目标寄存器中.
+
+* xtopei: topei显示当前符合条件的最高优先级的id, 供hart读取. 当向topei寄存器写入值时, 会将topei当前对应的ip位清除. 应当使用CSRRW, SCRRS等指令对topei寄存器同时进行读写操作, 分开读写的操作总是危险的(读取的id与清除的id可能不一致). 如果确实需要分开读取与清除ip位, 应当使用iselect与ireg寄存器进行清除.
+
+== 在Vexiiriscv上的实现
+
+* "IndirectCsrPlugin": 实例化iselect与ireg, 提供绑定目标寄存器与reg的接口.
+
+* "PrivilegedPlugin": 添加genImsicArea将imsci模块输出的trigger信号转化为pending信号. 并且提供多路选择器, 根据eidelivery的值来决定谁来通知hart.
+
+通过withAPlic与imsicInterrupts(当0时不实例化imsic)来决定实例化哪些器件. withSupervisor决定是否实例化S模式的aplic以及delegation线.
+通过调用bind函数将对应的target线绑定到对应的hart上.
