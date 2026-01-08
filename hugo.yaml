@@ -29,6 +29,15 @@ markup:
       rouge-linenums-mode: table
       source-linenums-option:
 
+menu:
+  main:
+  - name: Home
+    pageRef: /
+    weight: 10
+  - name: Tags
+    pageRef: /tags
+    weight: 20
+
 security:
   exec:
     allow: ['^(dart-)?sass(-embedded)?$', '^go$', '^git$', '^npx$', '^postcss$', '^tailwindcss$', '^asciidoctor$']
