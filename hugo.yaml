@@ -2,7 +2,6 @@ baseURL: https://project-inochi.github.io
 languageCode: en-us
 title: Project Inochi
 description:
-theme: m10c
 
 params:
   header:
