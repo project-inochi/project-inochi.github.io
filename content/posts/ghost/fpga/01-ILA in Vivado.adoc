@@ -1,6 +1,6 @@
 ---
 title: "FPGA调试 (1): ILA的使用"
-date: 2025-09-010T16:14:05+08:00
+date: 2025-09-10T16:14:05+08:00
 author: Ghost
 tags: ['Vivado']
 ---

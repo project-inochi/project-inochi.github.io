@@ -1,6 +1,6 @@
 ---
 title: "spinalHDL learning (4): AIA"
-date: 2025-09-010T16:45:05+08:00
+date: 2025-09-10T16:45:05+08:00
 author: Ghost
 tags: ['spinalHDL', 'aia']
 ---
