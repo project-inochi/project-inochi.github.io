@@ -10,7 +10,7 @@
         </div>
         <div>
           {{ partial "icon.html" (dict "ctx" $ "name" "calendar") }}
-          {{ .PublishDate.Format "Jan 2, 2006" }}
+          {{ .PublishDate.Format "2006.01.02" }}
         </div>
         <div>
           {{ partial "icon.html" (dict "ctx" $ "name" "clock") }}
