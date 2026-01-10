@@ -1,0 +1,845 @@
+---
+title: "舜华OS基础软件包构建"
+date: 2026-01-10T11:15:00+08:00
+author: Zeng Zixian<sycamoremoon376@gmail.com>
+tags: ['Koji']
+---
+
+= 舜华OS基础软件包构建
+Zeng Zixian<sycamoremoon376@gmail.com>
+
+== 关于构建软件包的顺序
+
+考虑到舜华OS是Anolis OS的官方衍生版，仍然采用了RPM软件包的格式并用DNF包管理器进行管理
+
+为了构建出能够自举的舜华OS, 需要一个bootstrap过程，以下关键的几个软件包：
+
+* `system-rpm-config`这个包中标识了整个系统的vendor版本，宏定义等关键信息，定义了 `/usr/lib/rpm/shunhua` 文件夹中的内容.
+* `rpm` 这个软件包在被编译的时候会通过给定的vendor信息，会默认查找`/usr/lib/rpm/<vendor>` 文件夹中的配置信息，需要与 `system-rpm-config` 一同替换
+* `efi-rpm-macros`, `go-rpm-macros`, `lua-rpm-macros`, `ocaml-srpm-macros`, `pyproject-rpm-macros`, `python-rpm-generators`, `python-rpm-macros`, `perl-srpm-macros`这些软件包同样往 `/usr/lib/rpm` 文件夹中写入了关键的信息，当在编译包的过程中用到 python, go, lua等工具的时候系统就会需要对应的rpm-macros.
+* `gcc` 作为核心的编译组件，在bootstrap中需要被替换vendor等信息为shunhua，指定目标三元组target为 `x86_64-shunhua-linux`
+* `annobin` 这个包中包含gcc的plugin, 是许多包的依赖
+
+明确了需要bootstrap的包，首先需要在Anolis OS中构建出这些软件包，然后再把重新构建的rpm重新安装回Anolis系统，完成一次初级的“衍生”，其中涉及一些很 *Dirty* 的操作(比如改系统文件名称， 修改系统文件内容， 在系统目录做软链接等)。完成这个0～1的步骤之后可以开始构建通用软件包了，就像滚雪球一样。
+
+== 如何构建和安装软件包
+
+因为从0开始写SRPM对软件打包过程太过繁琐，这里以构建写好的 `system-rpm-config-23-38.SH0.src.rpm` SRPM为例，将它通过rpmbuild工具拆解，编译，打包成RPM：
+
+. `rpmdev-setuptree` 在用户家目录建立rpmbuild文件夹作为构建RPM包的根目录
+. `rpm -ivh /path/to/system-rpm-config-23-38.SH0.src.rpm` 将SRPM解包到家目录的rpmbuild下，SPEC目录存放spec文件，SOURCE目录存放源文件
+. 修改rpmbuild/SPEC或者rpmbuild/SOURCE中的文件
+. `rpmbuild -ba --target 'x86_64-shunhua-linux' ~/rpmbuild/SPEC/system-rpm-config.spec` 构建RPM
+. 使用 `rpm -i --force /path/to/system-rpm-config-23-38.SH0.noarch.rpm` 安装编译好的脚本
+
+== koji 服务器搭建与使用
+
+=== 关于koji服务组件的简单介绍：
+
+koji-hub;;
+    它是所有 Koji 操作的核心，通过 XML-RPC 运行于 Apache 的 mod_python 模块下。koji-hub 采用被动方式，仅仅接受 XML-RPC 请求，依 赖编译守护模块和其他模块来进行交互。koji-hub是唯一直接访问数据库的 模块，而且是有读写文件系统的权限的两个模块之一(另外一个是koji-cli)。
+kojid;;
+    它是编译守护模块，运行在每一个执行编译任务的机器上。主要任务 是对编译请求分析处理。Koji除了编译外也支持其他任务，如创建安装 images。kojid同样也可以完成这样的任务。kojid使用mock来编译。它为每 一个build创建一个干净的编译环境。kojid使用python编写，通过 XML-RPC 和 koji-hub 通信。
+koji-web;;
+    它包含一套脚本，运行在 mod_python 下，使用 Cheetah 模板引 擎为 Koji 提供一个 Web 接口。
+koji-cli;;
+    它是一个用 python 写的 CLI 程序，提供对于 Koji 最多的操作。它能让用户查询信息，也能执行编译操作。
+kojira;;
+    它是一个后台守护程序，可以实时更新 build root repodata。
+
+=== Setting up SSL Certificates for authentication
+
+拷贝下面的 ssl.cnf 文件到 /etc/pki/koji/ssl.cnf, default_md不能使用md5, 至少应为sha256。修改一些信息为自己的
+
+[source,txt]
+----
+HOME                    = .
+RANDFILE                = .rand
+
+[ca]
+default_ca              = ca_default
+
+[ca_default]
+dir                     = .
+certs                   = $dir/certs
+crl_dir                 = $dir/crl
+database                = $dir/index.txt
+new_certs_dir           = $dir/newcerts
+certificate             = $dir/%s_ca_cert.pem
+private_key             = $dir/private/%s_ca_key.pem
+serial                  = $dir/serial
+crl                     = $dir/crl.pem
+x509_extensions         = usr_cert
+name_opt                = ca_default
+cert_opt                = ca_default
+default_days            = 3650
+default_crl_days        = 30
+default_md              = sha256
+preserve                = no
+policy                  = policy_match
+copy_extensions         = copy
+
+[policy_match]
+countryName             = match
+stateOrProvinceName     = match
+organizationName        = match
+organizationalUnitName  = optional
+commonName              = supplied
+emailAddress            = optional
+
+[req]
+default_bits            = 2048
+default_keyfile         = privkey.pem
+default_md              = sha256
+distinguished_name      = req_distinguished_name
+attributes              = req_attributes
+x509_extensions         = v3_ca # The extensions to add to the self signed cert
+string_mask             = MASK:0x2002
+
+[req_distinguished_name]
+countryName                     = Country Name (2 letter code)
+countryName_default             = CN
+countryName_max                 = 2
+stateOrProvinceName             = State or Province Name (full name)
+stateOrProvinceName_default     = Shandong
+localityName                    = Locality Name (eg, city)
+localityName_default            = Jinan
+0.organizationName              = Organization Name (eg, company)
+0.organizationName_default      = My company
+organizationalUnitName          = Organizational Unit Name (eg, section)
+commonName                      = Common Name (eg, your name or your server\'s hostname)
+commonName_max                  = 64
+emailAddress                    = Email Address
+emailAddress_max                = 64
+
+[req_attributes]
+challengePassword               = A challenge password
+challengePassword_min           = 4
+challengePassword_max           = 20
+unstructuredName                = An optional company name
+
+[usr_cert]
+basicConstraints                = CA:FALSE
+nsComment                       = "OpenSSL Generated Certificate"
+subjectKeyIdentifier            = hash
+authorityKeyIdentifier          = keyid,issuer:always
+
+[v3_ca]
+subjectKeyIdentifier            = hash
+authorityKeyIdentifier          = keyid:always,issuer:always
+basicConstraints                = critical,CA:true
+keyUsage                        = critical, cRLSign, digitalSignature, keyCertSign
+subjectAltName                  = @alternate_names
+
+[ v3_req ]
+basicConstraints                = CA:FALSE
+keyUsage                        = nonRepudiation, digitalSignature, keyEncipherment
+extendedKeyUsage                = clientAuth, serverAuth
+subjectAltName                  = @alternate_names
+
+[ alternate_names ]
+DNS.1                           = shunhuaii.com
+DNS.2                           = www.shunhuaii.com
+DNS.3                           = shunhuaii
+----
+
+=== Generate CA
+
+执行命令创建基础的文件目录和根证书：
+
+[source,bash]
+----
+cd /etc/pki/koji/
+mkdir {certs,private,confs}
+touch index.txt
+echo 01 > serial
+openssl genrsa -out private/koji_ca_cert.key 2048
+openssl req -config ssl.cnf -new -x509 -days 3650 -key private/koji_ca_cert.key -out koji_ca_cert.crt -extensions v3_ca
+----
+
+有了根证书之后，通过根证书 `koji_ca_cert.crt` 签发每个用户的证书，通过 `add_user.sh <name>` 创建每个用户的证书。 +
+如果需要通过web进行重启，修改某个执行中的koji 任务等操作，可以使用 `webuser.sh <name>` 来创建p12证书
+
+[source,bash]
+----
+# add_user.sh
+# if you change your certificate authority name to something else you will
+# need to change the caname value to reflect the change.
+caname=koji
+
+# user is equal to parameter one or the first argument when you actually
+# run the script
+user=$1
+
+openssl genrsa -out private/${user}.key 2048
+cat ssl.cnf | sed 's/insert_hostname/'${user}'/'> ssl2.cnf
+openssl req -config ssl2.cnf -new -extensions v3_req -nodes -out certs/${user}.csr -key private/${user}.key
+openssl ca -config ssl2.cnf -extensions v3_req -keyfile private/${caname}_ca_cert.key -cert ${caname}_ca_cert.crt \
+    -out certs/${user}.crt -outdir certs -infiles certs/${user}.csr
+cat certs/${user}.crt private/${user}.key > ${user}.pem
+----
+
+[source,bash]
+----
+# webuser.sh
+# if you change your certificate authority name to something else you will
+# need to change the caname value to reflect the change.
+caname=koji
+
+# user is equal to parameter one or the first argument when you actually
+# run the script
+user=$1
+
+openssl pkcs12 -export -inkey private/${user}.key -in certs/${user}.crt \
+    -CAfile ${caname}_ca_cert.crt -out certs/${user}_browser_cert.p12
+
+----
+
+这里假设通过 `add_user.sh` 创建了一个名为 `kojiadmin` 的用户, 同时也需要在系统中创建一个名为 `kojiadmin` 的用户方便管理：
+
+[source,txt]
+----
+root@localhost$ su - kojiadmin
+kojiadmin@localhost$ mkdir ~/.koji
+kojiadmin@localhost$ cp /etc/pki/koji/kojiadmin.pem ~/.koji/client.crt   # NOTE: It is IMPORTANT you use the PEM and NOT the CRT
+kojiadmin@localhost$ cp /etc/pki/koji/koji_ca_cert.crt ~/.koji/clientca.crt
+kojiadmin@localhost$ cp /etc/pki/koji/koji_ca_cert.crt ~/.koji/serverca.crt
+----
+
+=== PostgreSQL Server
+
+==== Initialize PostgreSQL DB
+
+[source,bash]
+root@localhost$ postgresql-setup --initdb --unit postgresql
+root@localhost$ systemctl enable postgresql --now
+
+==== Setup User Accounts
+[source,bash]
+root@localhost$ useradd koji
+root@localhost$ passwd -d koji
+
+==== Setup PostgreSQL and populate schema
+[source,bash]
+root@localhost# su - postgres
+postgres@localhost$ createuser --no-superuser --no-createrole --no-createdb koji
+postgres@localhost$ createdb -O koji koji
+postgres@localhost$ psql -c "alter user koji with encrypted password 'mypassword';"
+postgres@localhost$ logout
+root@localhost$ yum -y install koji
+root@localhost$ su - koji
+koji@localhost$ psql koji koji < /usr/share/koji/schema.sql 
+koji@localhost$ exit
+
+==== Authorize Koji-hub to PostgreSQL
+
+修改配置文件 `/var/lib/pgsql/data/pg_hba.conf`
+
+手动添加这一行
+[source,txt]
+host    koji        koji        127.0.0.1/32          trust
+
+修改以下三行. 注意修改trust
+[source,bash]
+local   all         all                               trust
+host    all         all         127.0.0.1/32          trust
+host    all         all         ::1/128               trust
+
+重启服务，应用改变
+[source,bash]
+root@localhost$ systemctl reload postgresql
+
+在 PostgreSQL 数据库中添加系统管理员信息. 然后 kojiadmin 用户才可以调用 koji add-host 等命令
+[source,bash]
+----
+root@localhost# su - koji
+koji@localhost$ psql
+insert into users (name, password, status, usertype) values ('kojiadmin', '', 0, 0);
+select * from users;       # 找到kojiadmin的user id. 本例中user_id=1
+insert into user_perms (user_id, perm_id,creator_id) values (1, 1, 1);
+
+select * from users;
+insert into user_perms (user_id, perm_id,creator_id) values (1, 1, 1);
+select * from user_perms;
+
+exit
+----
+
+=== Koji Hub
+
+koji-hub是整个koji服务的关键，不管是web界面，koji-cli程序或者通过 XMLRPC API访问，最终都是koji-hub来处理请求
+
+NOTE: 配置koji-hub中关于url地址的部分我都使用了 `shunhua.com`， 这个域名是在我本地解析成了 `127.0.0.1`，根据需要可以修改，或者直接用IP地址
+
+==== 配置文件：`/etc/koji-hub/hub.conf`：
+[source,conf]
+----
+[hub]
+
+## ConfigParser style config file, similar to ini files
+## https://docs.python.org/library/configparser.html
+##
+## Note that multiline values can be set by indenting subsequent lines
+## (which means you should not indent regular lines)
+
+##  Basic options  ##
+DBName = koji
+DBUser = koji
+#DBHost = db.example.com
+#DBPort = 5432
+#Note, that db password is sensitive and this file shouldn't be publicly readable.
+#DBPass = example_password
+# Same can be achieved with supplying whole dsn string (with potential additional options)
+# DBConnectionString also takes precedence over all other DB* options
+# whose will be deprecated in future
+#DBConnectionString = dbname=koji user=koji host=db.example.com port=5432 password=example_password
+KojiDir = /mnt/koji
+
+##  Auth-related options  ##
+# Use user IP in session management
+# CheckClientIP = True
+
+##  Kerberos authentication options  ##
+
+# ProxyPrincipals = koji/kojiweb@EXAMPLE.COM
+## format string for host principals (%s = hostname)
+# HostPrincipalFormat = compile/%s@EXAMPLE.COM
+## Allowed Kerberos Realms separated by ','.
+## Default value "*" indicates any Realm is allowed
+# AllowedKrbRealms = *
+## TODO: this option should be turned True in 1.34
+# DisableURLSessions = False
+
+## end Kerberos auth configuration
+
+
+
+##  SSL client certificate auth configuration  ##
+#note: ssl auth may also require editing the httpd config (conf.d/kojihub.conf)
+
+## the client username is the common name of the subject of their client certificate
+DNUsernameComponent = CN
+## separate multiple DNs with |
+ProxyDNs = /C=CN /ST=Shandong /L=Jinan /O=My company /CN=shunhuaii
+
+## end SSL client certificate auth configuration
+
+
+
+##  Other options  ##
+LoginCreatesUser = On
+# Clients with ProxyPrincipals can use different method for proxying user than GSSAPI. In such case
+# it need to be explicitely allowed via AllowProxyAuthType.
+# AllowProxyAuthType = Off
+KojiWebURL = http://shunhuaii.com/koji
+# The domain name that will be appended to Koji usernames
+# when creating email notifications
+#EmailDomain = example.com
+# whether to send the task owner and package owner email or not on success.  this still goes to watchers
+NotifyOnSuccess = False
+## Disables all notifications
+DisableNotifications = True
+
+##  Resource limits  ##
+## All standard RLIMIT_* can be set here
+# RLIMIT_AS =
+# RLIMIT_CORE =
+# RLIMIT_CPU =
+# RLIMIT_DATA =
+# RLIMIT_FSIZE =
+# RLIMIT_MEMLOCK =
+# RLIMIT_NOFILE =
+# RLIMIT_NPROC =
+# RLIMIT_OFILE =
+# RLIMIT_RSS =
+# RLIMIT_STACK =
+
+## If memory consumption raises during handling request for more
+## than MemoryWarnThreshold kilobytes, warning is emitted to log
+# MemoryWarnThreshold = 5000
+
+## Maximum request length can be limited on python-side
+# MaxRequestLength = 4194304
+
+
+## Extended features
+## Support Maven builds
+# EnableMaven = False
+## Support Windows builds
+# EnableWin = False
+
+## Koji hub plugins
+## The path where plugins are found
+# PluginPath = /usr/lib/koji-hub-plugins
+## A space-separated list of plugins to load
+# Plugins = echo
+
+## If KojiDebug is on, the hub will be /very/ verbose and will report exception
+## details to clients for anticipated errors (i.e. koji's own exceptions --
+## subclasses of koji.GenericError).
+# KojiDebug = On
+#
+## Log level/format for python logging module at hub
+# LogLevel = WARNING
+# LogFormat = %(asctime)s [%(levelname)s] m=%(method)s u=%(user_name)s p=%(process)s r=%(remoteaddr)s %(name)s: %(message)s'
+#
+#
+## If VerbosePolicy (or KojiDebug) is on, 'policy violation'
+## messages will contain also policy rule which caused this denial
+## VerbosePolicy = False
+#
+## If MissingPolicyOk is on, and given policy is not set up,
+## policy test will pass as ok. If 'deny' result is desired, set it
+## to off
+# MissingPolicyOk = True
+#
+## Determines how much detail about exceptions is reported to the client (via faults)
+## Meaningful values:
+##   normal - a basic traceback (format_exception)
+##   extended - an extended traceback (format_exc_plus)
+##   anything else - no traceback, just the error message
+## The extended traceback is intended for debugging only and should NOT be
+## used in production, since it may contain sensitive information.
+# KojiTraceback = normal
+
+## These options are intended for planned outages
+# ServerOffline = False
+# OfflineMessage = temporary outage
+# LockOut = False
+## If ServerOffline is True, the server will always report a ServerOffline fault (with
+## OfflineMessage as the fault string).
+## If LockOut is True, the server will report a ServerOffline fault for all non-admin
+## requests.
+
+## Determines rules for names (tag, user, ...)
+# MaxNameLengthInternal = 256
+# RegexNameInternal = ^[A-Za-z0-9/_.+-]+$
+# RegexUserName = ^[A-Za-z0-9/_.@-]+$
+
+## Determines default checksums
+# RPMDefaultChecksums = md5 sha256
+
+# The number of minutes before sessions are required to re-authenticate. Set to 0 for no timeout.
+# SessionRenewalTimeout = 1440
+----
+
+==== 配置文件 `/etc/httpd/conf/httpd.conf`
+[source,conf]
+----
+ServerRoot "/etc/httpd"
+Listen 80
+Include conf.modules.d/*.conf
+User apache
+Group apache
+ServerAdmin root@localhost
+<Directory />
+    AllowOverride all
+    Order Deny,Allow
+    Allow from all
+</Directory>
+DocumentRoot "/var/www/html"
+<Directory "/var/www">
+    AllowOverride None
+    Require all granted
+</Directory>
+<Directory "/var/www/html">
+    Options Indexes FollowSymLinks
+    AllowOverride None
+    Require all granted
+</Directory>
+<IfModule dir_module>
+    DirectoryIndex index.html
+</IfModule>
+<Files ".ht*">
+    Require all denied
+</Files>
+ErrorLog "logs/error_log"
+LogLevel warn
+<IfModule log_config_module>
+    LogFormat "%h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-Agent}i\"" combined
+    LogFormat "%h %l %u %t \"%r\" %>s %b" common
+    <IfModule logio_module>
+      LogFormat "%h %l %u %t \"%r\" %>s %b \"%{Referer}i\" \"%{User-Agent}i\" %I %O" combinedio
+    </IfModule>
+    CustomLog "logs/access_log" combined
+</IfModule>
+<IfModule alias_module>
+    ScriptAlias /cgi-bin/ "/var/www/cgi-bin/"
+</IfModule>
+<Directory "/var/www/cgi-bin">
+    AllowOverride None
+    Options None
+    Require all granted
+</Directory>
+<IfModule headers_module>
+    RequestHeader unset Proxy early
+</IfModule>
+<IfModule mime_module>
+    TypesConfig /etc/mime.types
+    AddType application/x-compress .Z
+    AddType application/x-gzip .gz .tgz
+    AddType text/html .shtml
+    AddOutputFilter INCLUDES .shtml
+</IfModule>
+AddDefaultCharset UTF-8
+<IfModule mime_magic_module>
+    MIMEMagicFile conf/magic
+</IfModule>
+EnableSendfile on
+IncludeOptional conf.d/*.conf
+----
+
+==== 配置文件 `/etc/httpd/conf.d/kojihub.conf`
+[source,conf]
+----
+#
+# koji-hub is an xmlrpc interface to the Koji database
+#
+
+Alias /kojihub /usr/share/koji-hub/kojiapp.py
+
+<Directory "/usr/share/koji-hub">
+    Options ExecCGI
+    SetHandler wsgi-script
+    WSGIApplicationGroup %{GLOBAL}
+    # ^ works around a hub issue with OpenSSL
+    # see: https://cryptography.io/en/latest/faq/#starting-cryptography-using-mod-wsgi-produces-an-internalerror-during-a-call-in-register-osrandom-engine
+    WSGIScriptReloading Off
+    # ^ reloading breaks hub "firstcall" check
+    # see: https://pagure.io/koji/issue/875
+    <IfVersion < 2.4>
+        Order allow,deny
+        Allow from all
+    </IfVersion>
+    <IfVersion >= 2.4>
+        Require all granted
+    </IfVersion>
+</Directory>
+
+# Also serve /mnt/koji
+Alias /kojifiles "/mnt/koji/"
+
+<Directory "/mnt/koji">
+    # Options Indexes SymLinksIfOwnerMatch
+    #If your top /mnt/koji directory is not owned by the httpd user, then
+    #you will need to follow all symlinks instead, e.g.
+    #Options Indexes FollowSymLinks
+    # AllowOverride None
+    # IndexOptions +NameWidth=*
+    # <IfVersion < 2.4>
+    #     Order allow,deny
+    #     Allow from all
+    # </IfVersion>
+    # <IfVersion >= 2.4>
+    #     Require all granted
+    # </IfVersion>
+    Options Indexes
+    AllowOverride None
+    # Apache < 2.4
+    #   Order allow,deny
+    #   Allow from all
+    # Apache >= 2.4
+    Require all granted
+</Directory>
+
+<Location /kojihub>
+    SSLOptions +StdEnvVars
+</Location>
+
+<Location /koji/login>
+    SSLOptions +StdEnvVars
+</Location>
+
+Alias /packages/ /mnt/koji/packages/
+<Directory "/mnt/koji/packages">
+    Options Indexes
+    AllowOverride None
+    Order allow,deny
+    Allow from all
+</Directory>
+
+# uncomment this to enable authentication via SSL client certificates
+<Location /kojihub/ssllogin>
+        SSLVerifyClient none
+        SSLVerifyDepth  10
+        SSLOptions +StdEnvVars
+</Location>
+
+# uncomment this to enable authentication via GSSAPI
+# <Location /kojihub/ssllogin>
+#         AuthType GSSAPI
+#         AuthName "GSSAPI Single Sign On Login"
+#         GssapiCredStore keytab:/etc/koji.keytab
+#         Require valid-user
+# </Location>
+----
+
+配置文件 `/etc/httpd/conf.d/ssl.conf`
+[source,conf]
+----
+Listen 443 https
+SSLPassPhraseDialog exec:/usr/libexec/httpd-ssl-pass-dialog
+SSLSessionCache         shmcb:/run/httpd/sslcache(512000)
+SSLSessionCacheTimeout  300
+SSLRandomSeed startup file:/dev/urandom  256
+SSLRandomSeed connect builtin
+SSLCryptoDevice builtin
+<VirtualHost _default_:443>
+ErrorLog logs/ssl_error_log
+TransferLog logs/ssl_access_log
+LogLevel warn
+SSLEngine on
+SSLHonorCipherOrder on
+SSLCipherSuite PROFILE=SYSTEM
+SSLProxyCipherSuite PROFILE=SYSTEM
+SSLCertificateFile /etc/pki/koji/certs/kojihub.crt
+SSLCertificateKeyFile /etc/pki/koji/private/kojihub.key
+SSLCertificateChainFile /etc/pki/koji/koji_ca_cert.crt
+SSLCACertificateFile /etc/pki/koji/koji_ca_cert.crt
+SSLVerifyClient require
+SSLVerifyDepth  10
+<FilesMatch "\.(cgi|shtml|phtml|php)$">
+    SSLOptions +StdEnvVars
+</FilesMatch>
+<Directory "/var/www/cgi-bin">
+    SSLOptions +StdEnvVars
+</Directory>
+BrowserMatch "MSIE [2-5]" \
+         nokeepalive ssl-unclean-shutdown \
+         downgrade-1.0 force-response-1.0
+CustomLog logs/ssl_request_log \
+          "%t %h %{SSL_PROTOCOL}x %{SSL_CIPHER}x \"%r\" %b"
+</VirtualHost>
+----
+
+==== Koji filesystem skeleton
+
+建立koji构建包的目录：
+[source,bash]
+----
+cd /mnt
+mkdir koji
+cd koji
+mkdir {packages,repos,work,scratch,repos-dist}
+chown apache:apache *
+----
+
+关闭SELinux:
+[source,bash]
+----
+root@localhost$ setsebool -P allow_httpd_anon_write=1
+root@localhost$ semanage fcontext -a -t public_content_rw_t "/mnt/koji(/.*)?"
+root@localhost$ restorecon -r -v /mnt/koji
+root@localhost$ sed -i -E 's/SELINUX=(enforcing|permissive)/SELINUX=disabled/' /etc/selinux/config
+----
+
+=== Koji CLI
+
+==== 配置文件 `/etc/koji.conf`
+[source,conf]
+----
+[koji]
+
+;configuration for koji cli tool
+
+;url of XMLRPC server
+server = http://shunhuaii.com/kojihub
+;server = https://koji.fedoraproject.org/kojihub
+
+;url of web interface
+weburl = http://shunhuaii.com/koji
+;weburl = https://koji.fedoraproject.org/koji
+
+;url of package download site
+;pkgurl = http://www.example.com/packages
+topurl = http://shunhuaii.com/kojifiles
+
+;path to the koji top directory
+topdir = /mnt/koji
+
+;configuration for Kerberos authentication
+
+;the principal to auth as for automated clients
+;principal = client@EXAMPLE.COM
+
+;the keytab to auth as for automated clients
+;keytab = /etc/krb5.keytab
+
+; fedora uses kerberos auth
+authtype = ssl
+
+;configuration for SSL authentication
+
+;client certificate
+cert = ~/.koji/client.crt
+
+;certificate of the CA that issued the HTTP server certificate
+serverca = ~/.koji/serverca.crt
+
+;plugin paths, separated by ':' as the same as the shell's PATH
+;koji_cli_plugins module and ~/.koji/plugins are always loaded in advance,
+;and then be overridden by this option
+;plugin_paths = ~/.koji/plugins
+
+;[not_implemented_yet]
+;enabled plugins for CLI, runroot and save_failed_tree are available
+;plugins =
+; runroot plugin is enabled by default in fedora
+plugins = runroot
+
+;timeout of XMLRPC requests by seconds, default: 60 * 60 * 12 = 43200
+;timeout = 43200
+
+;timeout of GSSAPI/SSL authentication by seconds, default: 60
+;auth_timeout = 60
+
+;enforcing CLI authentication even for anonymous calls
+;force_auth = False
+
+; use the fast upload feature of koji by default
+use_fast_upload = yes
+----
+
+==== 测试Koji Cli是否正常
+[source,bash]
+----
+root@localhost$ su - kojiadmin
+kojiadmin@localhost$ koji moshimoshi
+hi, kojiadmin!
+
+You are using the hub at https://shunhuaii.com/kojihub (Koji 1.35.3)
+Authenticated via client certificate /home/kojiadmin/.koji/client.crt
+----
+
+=== Koji Web
+==== 配置文件 `/etc/kojiweb/web.conf`
+[source,conf]
+----
+[web]
+SiteName = koji
+# KojiTheme = mytheme
+
+# Key urls
+KojiHubURL = http://shunhuaii.com/kojihub
+KojiFilesURL = http://shunhuaii.com/kojifiles
+
+# Kerberos authentication options
+# WebPrincipal = koji/web@EXAMPLE.COM
+# WebKeytab = /etc/httpd.keytab
+# WebCCache = /var/tmp/kojiweb.ccache
+# The service name of the principal being used by the hub
+# KrbService = host
+## The realm of server principal. Using client's realm if not set
+# KrbServerRealm = EXAMPLE.COM
+
+# SSL authentication options
+WebCert = /etc/pki/koji/kojiweb.pem
+ClientCA = /etc/pki/koji/koji_ca_cert.crt
+KojiHubCA = /etc/pki/koji/koji_ca_cert.crt
+# KojiHubCA needs to be set only if system-wide CA bundle doesn't contain
+# it already. Note, that it will override that bundle.
+# KojiHubCA = /etc/kojiweb/kojihubca.crt
+
+# How the users authenticate to kojiweb, if different from the
+# way Kojiweb authenticates to the hub. This can be used
+# to have users authenticate to kojiweb via kerberos while
+# still using an SSL certificate to authenticate to the hub.
+# WebAuthType = kerberos
+
+LoginTimeout = 72
+
+# This must be CHANGED to random value and uncommented before deployment
+# Secret = CHANGE_ME
+
+LibPath = /usr/share/koji-web/lib
+
+# If set to True, then the footer will be included literally.
+# If False, then the footer will be included as another Kid Template.
+# Defaults to True
+LiteralFooter = True
+
+# This can be a space-delimited list of the numeric IDs of users that you want
+# to hide from tasks listed on the front page. You might want to, for instance,
+# hide the activity of an account used for continuous integration.
+# HiddenUsers = 5372 1234
+
+# Task types visible in pulldown menu on tasks page.
+# Tasks =
+# runroot plugin provided via main package could be listed as:
+# Tasks = runroot
+# Tasks that can exist without a parent
+# ToplevelTasks = 
+# Tasks that can have children
+# ParentTasks = 
+
+# Uncommenting this will show python tracebacks in the webUI, but they are the
+# same as what you will see in apache's error_log.
+# Not for production use
+# PythonDebug = True
+----
+
+=== Koji builder
+
+在本例中，koji builder和koji核心服务都是放在同一台机器上，除此之外可以把build逻辑和核心逻辑分开，也可以添加多个builder服务器
+
+==== 配置文件 `/etc/kojid/kojid.conf`
+[source,conf]
+----
+[kojid]
+sleeptime=60
+maxjobs=10
+minspace=8192
+topdir=/mnt/koji
+workdir=/tmp/koji
+mockdir=/var/lib/mock
+mockuser=kojibuilder
+vendor=Koji
+mockhost=koji-linux-gnu
+server=http://shunhuaii.com/kojihub
+pkgurl=http://shunhuaii.com/packages
+user=kojibuilder
+topurl=http://shunhuaii.com/kojifiles
+allowed_scms=scm.example.com:/cvs/example git.example.org:/example svn.example.org:/users/*:no
+from_addr=Koji Build System <buildsys@example.com>
+cert = /etc/kojid/kojibuilder.pem
+serverca = /etc/kojid/koji_ca_cert.crt
+----
+
+=== Kojira
+==== 配置文件 `/etc/kojira/kojira.conf`
+[source,conf]
+----
+[kojira]
+server=http://shunhuaii/kojihub
+topdir=/mnt/koji
+logfile=/var/log/kojira.log
+cert = /etc/kojira/kojira.pem
+serverca = /etc/kojira/koji_ca_cert.crt
+----
+
+=== 启动 Koji 服务
+[source,bash]
+----
+root@localhost$ systemctl enable kojid --now
+root@localhost$ systemctl enable kojira --now
+root@localhost$ su - kojiadmin
+root@localhost$ koji add-tag shunhua-1-base
+root@localhost$ koji add-tag shunhua-1-addons
+root@localhost$ koji add-tag shunhua-1-addons-testing --parent=shunhua-1-addons
+root@localhost$ koji add-tag shunhua-1-addons-build --parent=shunhua-1-addons --arches="x86_64"
+root@localhost$ koji add-tag-inheritance --priority=1 shunhua-1-addons-build shunhua-1-base
+
+root@localhost$ koji add-external-repo -t shunhua-1-base shunhua-1 http://211.87.236.71:88/shunhua/0.1/os/\$arch/os/
+
+
+root@localhost$ koji add-group shunhua-1-addons-build build
+#koji add-group-pkg shunhua-1-addons-build build bash bzip2 coreutils cpio diffutils anolis-release findutils gawk gcc gcc-c++ grep gzip info make patch system-rpm-config rpm-build sed shadow-utils tar unzip util-linux-ng which xz
+root@localhost$ koji add-group shunhua-1-addons-build srpm-build
+#koji add-group-pkg shunhua-1-addons-build srpm-build python3 make system-rpm-config rpm-build
+root@localhost$ koji import-comps comps.xml shunhua-1-addons-build
+root@localhost$ koji list-groups shunhua-1-addons-build
+
+
+root@localhost$ koji add-target shunhua-1-addons shunhua-1-addons-build shunhua-1-addons-testing
+#koji add-pkg --owner=kojiadmin shunhua-1-addons bash binutils
+----
