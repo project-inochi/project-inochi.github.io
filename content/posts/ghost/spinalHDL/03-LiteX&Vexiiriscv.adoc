@@ -1,98 +1,317 @@
 ---
 title: "spinalHDL learning (3): LiteX&Vexiiriscv"
-date: 2025-09-10T09:14:05+08:00
+date: 2026-01-15T16:00:05+08:00
 author: Ghost
 tags: ['spinalHDL', 'Vexiiriscv', 'LiteX']
 ---
 
-== 编译基本流程
+== FPGA
 
-=== 编写板级描述文件
+=== litex
 
-platform文件用于描述板卡资源，定义引脚属性等。
-
-[TIP]
-====
-在编译时如果需要使用向xdc文件添加指令来进行额外约束操作(IO约束、时钟约束等),
-可以在"do_finalize"中使用“self.add_platform_command("")”来添加.
-====
-
-target文件用于定义具体soc设计，实例化相关phy等。
-
-=== 仿真
-[source,bash]
-----
-litex_sim --threads 8 --opt-level Ofast \
-  --update-repo=no \
-  --cpu-type vexiiriscv --cpu-variant debian \
-  --bios-lto   --sim-debug   --bus-standard=axi --with-sdram --sdram-module K4B1G0446F --sdram-data-width=64 --soc-json soc.json   --sdram-init boot.json
-----
-
-=== 编译
-[source,bash]
-----
-targets/*.py --build --update-repo=no --cpu-type vexiiriscv --cpu-variant debian --with-coherent-dma --no-netlist-cache --cpu-count 4
-----
-
-* --update-repo=no: 每次编译前都会自动拉取修改, 添加此选项防止覆盖本地修改.
-
-* --cpu-variant debian: "debian"将编译64位的cpu, 不写或使用"linux"则编译32位cpu.
-
-* --with-coherent-dma: 如果使用sd卡, 必须打开此选项来启用DMA, 否则sd卡的SD-Mode无法使用(spi-Mode可以使用).
-
-* --no-netlist-cache: 如果Vexiiriscv没有新的提交, 编译器不会重复编译Vexiiriscv的Verilog代码,
-启用此选项使每一次编译都强制重新生成Verilog代码.
-
-=== 修改initram文件
-
-"/etc/inittab"中更改串口配置为:
-
-[source]
-----
-::respawn:-/sbin/getty -L 0 ttyLXU0 vt220
-----
-
-=== 生成dts/dtb
+==== 仿真
 
 [source,bash]
 ----
-litex_json2dts_linux csr.json > soc.dts --initrd-start 50331648 --initrd initramfs.cpio
+# 启动opensbi需要将dtb文件打入jump文件中, boot.json无法传递参数(r2, addr)
 
-# 生成的dts中, 需要修改启动选项
+litex_sim --threads 8 --opt-level Ofast
+--update-repo=no
+--cpu-type vexiiriscv --cpu-variant debian
+--bios-lto   --sim-debug
+--with-sdram --sdram-module K4B1G0446F --sdram-data-width=64
+--csr-csv ./csr.csv --sdram-init ./image/boot.json
+----
+
+==== 编译
+
+[source,bash]
+----
+# SD卡需要coherent-dma支持
+
+./litex-boards/litex_boards/targets/riguke_xcku5p.py --build --update-repo=no --cpu-type vexiiriscv --cpu-variant debian --with-coherent-dma --no-netlist-cache --cpu-count 4 --with-ethernet --with-sdcard
+
+# aplic, imsic
+
+./litex-boards/litex_boards/targets/riguke_xcku5p.py --build --update-repo=no --cpu-type vexiiriscv --cpu-variant debian --with-coherent-dma --no-netlist-cache --cpu-count 4  --with-aplic --imsic-interrupts 64 --with-ethernet --with-sdcard
+
+# pcie_uart
+
+./litex-boards/litex_boards/targets/fx600.py --build --update-repo=no --cpu-type vexiiriscv --cpu-variant debian --with-coherent-dma --no-netlist-cache --with-ethernet --with-pcie --driver --uart-name crossover
+
+# jtag_uart
+
+./litex-boards/litex_boards/targets/fx600.py --build --update-repo=no --cpu-type vexiiriscv --cpu-variant debian --with-coherent-dma --no-netlist-cache --with-ethernet --uart-name jtag_uart
+
+# 64bit (64bit 下, 与dma相关的功能无法使用,如sdcard)
+
+./litex-boards/litex_boards/targets/riguke_xcku5p.py --build --update-repo=no --cpu-type vexiiriscv --cpu-variant debian --with-coherent-dma --no-netlist-cache --with-ethernet --bus-address-width 64 --bus-data-width 64 --vexii-args "--physical-width=38 "
+
+
+	# litex_board add_pcie: address_width = 64
+
+./litex-boards/litex_boards/targets/fx600.py --build --update-repo=no --cpu-type vexiiriscv --cpu-variant debian --with-coherent-dma --no-netlist-cache --with-ethernet --bus-address-width 64 --bus-data-width 64 --vexii-args "--physical-width=38 " --with-pcie --driver --uart-name crossover
+----
+
+==== 构建启动文件
+
+dtb
+[source,bash]
+----
+# 生成dts
+
+litex_json2dts_linux csr.json > soc.dts --initrd-start 50331648 --initrd-size 36491776
+
+# 更改bootargs
+
+	# uart,
+
 chosen {
-    bootargs = "console=ttyLXU0,115200n8 earlycon ignore_loglevel";
-    stdout-path = "serial0:115200n8";
+	bootargs = "console=ttyLXU0,115200n8 earlycon ignore_loglevel";
+	stdout-path = "serial0:115200n8";
+};
+
+	# pcie or jtag
+
+chosen {
+	bootargs = "console=liteuart,115200n8 earlycon ignore_loglevel";
+	stdout-path = "serial0:115200n8";
+;}
+
+	# 修改冷启动cpu
+
+chosen {
+	opensbi-config {
+		compatible = "opensbi,config";
+		cold-boot-harts = <&cpu1 &cpu2 &cpu3 &cpu4>;
+		# heap-size = <0x400000>;
+		# system-suspend-test;
+	};
 };
 
 dtc -I dts -O dtb -o soc.dtb soc.dts
 ----
 
-=== 编译opensbi
 
-=== 编译内核文件
+initram.cpio
 
-基于defconfig, 搜索"litex, liteuart".
+[source,bash]
+----
+# 将console改为ttyLXU0
 
-=== boot.json
+----
 
+opensbi
+
+[source,bash]
+----
+export CROSS_COMPILE=riscv64-linux-gnu-
+export ARCH=riscv
+make PLATFORM=generic PLATFORM_RISCV_XLEN=64 FW_FDT_PATH=/home/ghost/Projects/fpga/litex/image/sd/soc.dtb FW_JUMP_FDT_ADDR=0x44200000
+make PLATFORM=generic PLATFORM_RISCV_XLEN=64
+----
+
+kernel
+
+[source,bash]
+----
+# 搜索: litex, liteuart
+
+----
+
+boot.json
 [source,json]
 ----
 {
-	"Image_clk":  	   "0x40200000",
-	"soc.dtb":		     "0x44200000",
-	"initramfs.cpio":  "0x43000000",
-	"fw_jump.bin":     "0x40000000",
-	"addr":            "0x40000000",
-	"r2":              "0x44200000"
+"Image":   "0x80200000",
+"soc.dtb":		"0x85800000",
+"initramfs.cpio":  "0x83000000",
+"fw_jump.bin":  "0x80000000",
+"addr":  "0x80000000",
+"r2":  "0x85800000"
 }
-
-// 也可以通过在编译opensbi时添加参数来不使用"r2"参数
-"FW_FDT_PATH=/home/ghost/Projects/fpga/litex/image/sd/soc.dtb FW_JUMP_FDT_ADDR=0x44200000"
-来将dtb编译到opensbi中
 ----
 
-* "addr": 启动地址, 如果不指定则默认使用json文件的最后一个地址.
+==== litex通信
 
-* "r2": 将此地址存入a2寄存器供opensbi读取dtb.
+uart(通信, 传输)
+[source,bash]
+----
+minicom -D /dev/ttyUSB1 -b 115200 --color=on
+litex_term --images=images/boot.json /dev/ttyUSBX (--safe : In case of CRC Error, slower but should always work) --speed 921600
+----
 
-=== vivado下载二进制文件
+jtag(通信, 传输)
+[source,bash]
+----
+# 使用vivado烧写完之后关闭vivado释放端口
+
+litex_term --jtag-config litex-boards/litex_boards/prog/openocd_xcku5p.cfg jtag
+nc localhost 20000
+openocd -f litex-boards/litex_boards/prog/openocd_fx600.cfg -f stream.cfg -c "init; irscan XCVU9P.tap 2; jtagstream_serve XCVU9P.tap 20000"
+----
+
+eth(传输)
+[source,bash]
+----
+安装tftp-hpa
+sudo systemctl enable --now tftpd.service
+tftp根文件夹: /srv/tftp/
+
+if with_ethernet:
+
+# 网线
+
+```
+# RGMII Ethernet PHY -------------------------------------------------------------------
+self.ethphy = LiteEthPHYRGMII(
+    clock_pads = self.platform.request("eth_clocks"),
+    pads       = self.platform.request("eth"),
+    usp        = True,
+    tx_delay   = 0,
+    rx_delay   = 0)
+self.add_ethernet(phy=self.ethphy,
+                  dynamic_ip=True)
+```
+
+if with_ethernet:
+
+# 光口
+
+```
+# RGMII Ethernet PHY -------------------------------------------------------------------
+self.ethphy = USP_GTY_1000BASEX(
+    self.crg.cd_eth.clk,
+    data_pads    = self.platform.request("qsfp28_sfp", 0),
+    sys_clk_freq = self.clk_freq,
+    refclk_from_fabric = True)
+self.add_ethernet(phy=self.ethphy,
+                  dynamic_ip=True)
+
+resetl = platform.request("qsfp28_resetl", 0)
+lpmode = platform.request("qsfp28_lpmode", 0)
+
+reset_cycles = int(sys_clk_freq * 10e-3)  # 1ms as tested with multiple SFP modules
+reset_count = Signal(max=reset_cycles+1, reset=reset_cycles)
+self.sync += [
+    If(ResetSignal("sys"),
+        reset_count.eq(reset_cycles)
+    ).Elif(reset_count != 0,
+        reset_count.eq(reset_count - 1)
+    )
+]
+
+self.comb += resetl.eq(~(ResetSignal("sys") | (reset_count != 0)))
+self.comb += lpmode.eq(0)
+```
+
+# bios设置ip
+
+eth_mac_addr 10:e2:d5:00:00:00
+eth_remote_ip 192.168.1.202
+eth_local_ip 192.168.1.50
+----
+
+pcie(通信,交互?)
+[source,bash]
+----
+litex_server --pcie --pcie-bar 01:00.0 [--addr-width 64]
+litex_term crossover --base-address 4026535936 --csr-csv ../csr.csv
+----
+
+==== benchmark
+
+openssl
+[source,bash]
+----
+#!/bin/bash
+
+while true; do
+echo "--------------------------------"
+openssl speed -multi 8
+echo "--------------------------------"
+sleep 5
+done
+----
+
+iperf3
+
+memory
+[source,bash]
+----
+stress-ng --cpu 0 --vm-rw 31 --vm-rw-bytes 500M --timeout 600s --vm-hang 0 --metrics-brief
+----
+
+=== vivado flash固化
+
+https://www.freesion.com/article/55722617617/
+
+1. 正常编译生成bit文件
+
+2. Tools -> Generate Memory Configuration File
+
+	选择MCS, 对应的flash型号(原理图), filename为保存路径以及文件名
+
+3. interface与litex-board中的
+
++
+
+[source, python]
+----
+self.add_platform_command("set_property BITSTREAM.CONFIG.SPI_BUSWIDTH 4 [current_design]")
+----
+对应
+
++
+
+[source, python]
+----
+litex-board:
+	do_finalize:
+		# Reduce programming time
+		self.add_platform_command("set_property BITSTREAM.GENERAL.COMPRESS TRUE [current_design]")
+		self.add_platform_command("set_property BITSTREAM.CONFIG.CONFIGRATE 85.0 [current_design]")
+		self.add_platform_command("set_property BITSTREAM.CONFIG.SPI_BUSWIDTH 4 [current_design]")
+		self.add_platform_command("set_property BITSTREAM.CONFIG.SPI_FALL_EDGE Yes [current_design]")
+
+		# Configure voltage and CONFIG_VOLTAGE
+		self.add_platform_command("set_property CFGBVS GND [current_design]")
+		self.add_platform_command("set_property CONFIG_VOLTAGE 1.8 [current_design]")
+	添加bit文件并生成(litex生成的mcs文件已经嵌入elf文件)
+----
+
+4. 在芯片右键菜单中选择"add configuration memory device", 并进行mcs文件烧录
+
+5. 将跳帽改为flash(qspi)启动(某些板子连入jtag默认jtag启动, 将jtag断开为flash启动)
+
+=== sbt mill
+
+[source,bash]
+----
+mill hw.runMain io.inochisa.gen.clock.ClockDetectedVerilog
+
+sbt "hw/runMain io.inochisa.gen.clock.ClockDetectedVerilog"
+
+sbt切换project:
+project hw
+----
+
+=== cva6
+
+[source,bash]
+----
+make fpga RISCV=/usr/ BOARD=genesys2 target=cv64a6_imafdc_sv39 VERILATOR_INSTALL_DIR=/usr/ CROSSCOMPILE=riscv64-elf- CVA6_REPO_DIR=/home/ghost/project/cva6/
+----
+
+=== fx600 工程修改
+
+[source,bash]
+----
+grep -rnl "/home/cj/Desktop/xilinx_nic100g" | xargs sed -i 's|/home/cj/Desktop/xilinx_nic100g|<MY PATH>|g'
+
+grep -rnl "open-nic-shell-main" | xargs sed -i 's|open-nic-shell-main|fx600-2cmac|g'
+
+## grep -rnl "au50/open_nic_shell/open_nic_shell.srcs/utils_1/imports/synth_1/open_nic_shell.dcp" | xargs sed -i 's|au50/open_nic_shell/open_nic_shell.srcs/utils_1/imports/synth_1/open_nic_shell.dcp|au50/open_nic_shell/open_nic_shell.runs/synth_1/open_nic_shell.dcp|g'
+
+[https://docs.amd.com/r/en-US/pg213-pcie4-ultrascale-plus/Kintex-UltraScale-Devices-Available-GT-Quads](https://docs.amd.com/r/en-US/pg213-pcie4-ultrascale-plus/Kintex-UltraScale-Devices-Available-GT-Quads)
+----
