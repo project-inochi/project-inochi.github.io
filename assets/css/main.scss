@@ -6,6 +6,7 @@ $primary-color: {{ .Site.Params.style.primaryColor | default "#57cc8a" }};
 
 @import 'base';
 
+@import 'components/asciidoctor';
 @import 'components/app';
 @import 'components/error_404';
 @import 'components/icon';
